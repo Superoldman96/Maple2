@@ -5,191 +5,137 @@ description: Parse and analyze MapleShark2 .msb sniff files for MapleStory2 pack
 
 # MapleShark Sniff Analyzer
 
-This skill helps analyze MapleShark2 sniff files (.msb) for MapleStory2 packet reverse engineering.
-
 ## Setup (first time only)
 
 ```bash
 cd tools/mapleshark && npm install
 ```
 
+The MSB file to analyze: **$ARGUMENTS**
+
 ## Before you start — ask these questions if not already answered
 
 1. **Direction** — are we looking at packets the client sends, the server sends, or both?
    - `OUT` = client → server (RecvOp) — what the client is doing
    - `IN` = server → client (SendOp) — what the server is responding with
-   - The same opcode number means a completely different thing in each direction.
+   - Knowing this upfront avoids wasting queries on the wrong half of the traffic, and the same opcode number means a completely different thing in each direction.
 
-2. **Server version** — GMS2 or KMS2? The file's locale byte is often `0` (Unknown) for older sniffs. If KMS2, pass `--locale kms2` to every command.
+2. **Server version** — GMS2 or KMS2? The file's locale byte is often `0` (Unknown) for older sniffs, so the opcode table won't auto-detect. If the user is on KMS2, pass `--locale kms2` to every command.
 
 ---
 
-## Usage
+## Workflow — always follow this order
 
-### Parse an MSB file
+**Never fetch all packets at once.** Use targeted commands and build up context incrementally.
+
+### Step 1 — Get an overview (always start here)
 
 ```bash
-node tools/mapleshark/parse-msb.js <path-to-msb-file>
+node tools/mapleshark/parse-msb.js $ARGUMENTS --summary
+# If KMS2: add --locale kms2
+node tools/mapleshark/parse-msb.js $ARGUMENTS --summary --locale kms2
 ```
 
-The script outputs JSON with:
-- `metadata`: File version, build number, locale, endpoints
-- `packets`: Array of parsed packets with opcode names mapped to RecvOp/SendOp enums
+This returns an opcode frequency table with no hex data — cheap on tokens. Use it to understand what's in the file and decide where to focus.
 
-### Example Output
+### Step 2 — Drill into specific opcodes
 
-```json
-{
-  "metadata": {
-    "version": 8245,
-    "build": 62000000,
-    "locale": "Global",
-    "localEndpoint": "127.0.0.1",
-    "localPort": 20001,
-    "remoteEndpoint": "127.0.0.1",
-    "remotePort": 20001
-  },
-  "packets": [
-    {
-      "index": 0,
-      "timestamp": "2024-01-15T10:30:00.000Z",
-      "direction": "OUT",
-      "opcode": "0x0011",
-      "opcodeName": "UserChat",
-      "opcodeEnum": "RecvOp.UserChat",
-      "length": 38,
-      "hexBytes": "00 00 00 00 0B 00 68 00 65 00 6C 00 6C 00 6F..."
-    }
-  ]
-}
+```bash
+# By name
+node tools/mapleshark/parse-msb.js $ARGUMENTS --opcode Skill --limit 5
+
+# By hex opcode
+node tools/mapleshark/parse-msb.js $ARGUMENTS --opcode 0x0020 --limit 10
+
+# Multiple opcodes at once
+node tools/mapleshark/parse-msb.js $ARGUMENTS --opcode Skill --opcode UserEnv --limit 5
+
+# Only server→client packets
+node tools/mapleshark/parse-msb.js $ARGUMENTS --opcode 0x00AA --direction IN --limit 5
 ```
 
-## Packet Format Reference
+### Step 3 — Inspect a specific packet in full
 
-### Data Types
+```bash
+# By index (from step 2 output)
+node tools/mapleshark/parse-msb.js $ARGUMENTS --index 42 --hex-limit 512
 
-| Type | Size | Description |
-|------|------|-------------|
-| Byte | 1 | 2 hex digits (00-FF) |
-| Bool | 1 | 0x00 = false, non-zero = true |
-| Short | 2 | 16-bit signed integer |
-| Int | 4 | 32-bit signed integer |
-| Long | 8 | 64-bit signed integer |
-| Float | 4 | IEEE 754 floating point |
-
-### String Types
-
-**Unicode String** (most common):
-```
-[2 bytes: length] [2 bytes per character]
-Example: 06 00 63 00 72 00 65 00 61 00 74 00 65 00 = "create"
+# A range of consecutive packets
+node tools/mapleshark/parse-msb.js $ARGUMENTS --range 40-50 --no-hex
 ```
 
-**ASCII String**:
-```
-[2 bytes: length] [1 byte per character]
-```
+### Step 4 — Track a known value across the sniff
 
-### Endianness
-
-All multi-byte values are **little-endian**. Example:
-- `27 00` as short = 39 (not 9984)
-- `38 00 00 00` as int = 56
-
-## Packet Structure
-
-### Basic Structure
-
-```
-[2 bytes: OPCODE] [payload...]
+```bash
+# Find all packets referencing a specific integer (e.g. objectId, itemId)
+# Value must be little-endian — e.g. 1000 decimal = E8 03 00 00
+node tools/mapleshark/parse-msb.js $ARGUMENTS --search-hex "E8 03 00 00" --summary
 ```
 
-The opcode determines the packet type:
-- **RecvOp (0x0001-0x00BE)**: Client → Server packets
-- **SendOp (0x0000-0x0130)**: Server → Client packets
+### Step 5 — Find which sniff files contain a value (folder search)
 
-### Headers/Modes
+Use this when you don't know which file to look at. Pass a folder instead of a file — the same filters apply.
 
-Many packets use a **header byte** after the opcode to indicate sub-type:
+```bash
+# Find all sniffs containing a specific hex value
+node tools/mapleshark/parse-msb.js <folder-path> --search-hex "F6 F3 5E 01" --no-hex
 
-```
-[OPCODE] [HEADER: byte] [payload...]
-```
-
-Example: `UserEnv (0x00AA)` has multiple modes (0, 1, 8, etc.) with different structures.
-
-### Loops
-
-Packets often contain arrays with a count prefix:
-
-```
-[INT: count]
-  [loop structure] (repeated `count` times)
+# Find all sniffs containing a specific opcode
+node tools/mapleshark/parse-msb.js <folder-path> --opcode FieldAddNpc --no-hex --limit 3
 ```
 
-### Branches
+Results are grouped by file. Use `filesWithMatches` to narrow down which files to drill into with Steps 2–4.
 
-Conditional fields based on:
-- Boolean values (true/false branches)
-- Item existence (if UID found in inventory)
-- Enum values
+---
 
-## Opcode Lookup
+## Codebase cross-reference
 
-Opcode names are resolved automatically from the file's locale (GMS2 or KMS2) by the `maple2-packetlib-ts` library.
+- **OUT packets (client→server)** → `Maple2.Server.Game/PacketHandlers/{Name}Handler.cs`
+- **IN packets (server→client)** → `Maple2.Server.Game/Packets/{Name}Packet.cs`
+- **Enums**: `Maple2.Server.Core/Constants/RecvOp.cs` (OUT) and `SendOp.cs` (IN)
 
-Key opcodes:
-- `0x0011 UserChat` - Chat messages
-- `0x0017 RequestItemInventory` - Inventory operations
-- `0x0020 Skill` - Skill usage
-- `0x00AA UserEnv` - Various user environment data
-- `0x006B ResponseCube` - Housing/cube operations
-
-## Finding Packet Handlers
-
-When analyzing packets, search for handlers:
-
-1. **RecvOp** → Client packets → Look in `Maple2.Server.Game/PacketHandlers/`
-2. **SendOp** → Server packets → Look in `Maple2.Server.Game/Packets/`
-
-Handler naming convention: `{PacketName}Handler.cs` or `{PacketName}Packet.cs`
-
-## Packet Resolver
-
-For unknown SendOp packets, use the in-game resolver:
-```
-/debug resolve <opcode>
+When you identify an opcode, search the codebase:
+```bash
+# Find the handler or packet builder
+# e.g. for Skill (RecvOp): look for SkillHandler.cs
+# e.g. for a SendOp: look for the matching Packet.cs
 ```
 
-Example: `/debug resolve 0x00AA`
+---
 
-The resolver:
-1. Sends packet to client with zeros
-2. Client reports errors with hints like `[hint=Decode4]`
-3. Resolver adds the missing field
-4. Structure saved to `./PacketStructures/`
+## Packet format reference
 
-**Note**: Only works for SendOp (server→client) packets.
+### Direction convention
+- **OUT** = client → server (`outbound: true`) → maps to `RecvOp`
+- **IN** = server → client (`outbound: false`) → maps to `SendOp`
 
-## Resources
+### Data types (little-endian)
 
-- [Understanding Packets Wiki](https://github.com/MS2Community/Maple2/wiki/Understanding-packets)
-- [Packet Resolver Wiki](https://github.com/MS2Community/Maple2/wiki/Packet-Resolver)
-- RecvOp enum: `Maple2.Server.Core/Constants/RecvOp.cs`
-- SendOp enum: `Maple2.Server.Core/Constants/SendOp.cs`
+| Type   | Size | Notes |
+|--------|------|-------|
+| Byte   | 1    | |
+| Bool   | 1    | 0x00 = false |
+| Short  | 2    | |
+| Int    | 4    | `27 00 00 00` = 39 |
+| Long   | 8    | |
+| Float  | 4    | IEEE 754 |
+| String | 2+n  | `[len: short][chars: 2 bytes each]` for Unicode |
 
-## Tips for Analysis
+### Common patterns
 
-1. **Start with known opcodes** - Cross-reference with existing handlers
-2. **Look for strings** - Often reveal packet purpose (names, messages)
-3. **Identify patterns** - Loops, headers, common field sequences
-4. **Compare with similar packets** - Many share sub-structures
-5. **Use the resolver** - For SendOp packets, let the client reveal structure
-6. **Check database IDs** - Map IDs, item IDs, NPC IDs often appear as ints
+**Mode byte** — many packets have a sub-type byte after the opcode:
+```
+[OPCODE 2b] [MODE 1b] [payload...]
+```
 
-## Converting Values for Packet Analysis
+**Arrays** — always length-prefixed:
+```
+[count: int] [element] × count
+```
 
-When searching for specific integer values in hex data, **always use Node.js for 100% accuracy**:
+### Converting values for `--search-hex`
+
+To search for a 32-bit int in little-endian, **always use Node.js for 100% accuracy**:
 
 ```bash
 # Convert decimal to little-endian hex
@@ -201,9 +147,30 @@ node -e "const buf = Buffer.from('F6F35E01', 'hex'); console.log(buf.readUInt32L
 # Output: 23000054
 ```
 
-Use in commands:
+Then use in command:
 ```bash
-node tools/mapleshark/parse-msb.js <file.msb> --search-hex "F6 F3 5E 01"
+node tools/mapleshark/parse-msb.js $ARGUMENTS --search-hex "F6 F3 5E 01"
 ```
 
+Common conversions (for reference):
+- `1000` decimal → `E8 03 00 00`
+- `256` decimal → `00 01 00 00`
+
 **Don't calculate manually—Node.js eliminates conversion errors.**
+
+---
+
+## Packet Resolver (for unknown SendOp)
+
+For server→client packets that are missing or broken, use the in-game resolver:
+```
+resolve <opcode>
+```
+The client will report what field is expected next. Results saved to `./PacketStructures/`.
+
+---
+
+## Resources
+
+- [Understanding Packets Wiki](https://github.com/MS2Community/Maple2/wiki/Understanding-packets)
+- [Packet Resolver Wiki](https://github.com/MS2Community/Maple2/wiki/Packet-Resolver)

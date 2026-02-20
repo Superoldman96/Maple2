@@ -74,6 +74,20 @@ node tools/mapleshark/parse-msb.js $ARGUMENTS --range 40-50 --no-hex
 node tools/mapleshark/parse-msb.js $ARGUMENTS --search-hex "E8 03 00 00" --summary
 ```
 
+### Step 5 — Find which sniff files contain a value (folder search)
+
+Use this when you don't know which file to look at. Pass a folder instead of a file — the same filters apply.
+
+```bash
+# Find all sniffs containing a specific hex value
+node tools/mapleshark/parse-msb.js <folder-path> --search-hex "F6 F3 5E 01" --no-hex
+
+# Find all sniffs containing a specific opcode
+node tools/mapleshark/parse-msb.js <folder-path> --opcode FieldAddNpc --no-hex --limit 3
+```
+
+Results are grouped by file. Use `filesWithMatches` to narrow down which files to drill into with Steps 2–4.
+
 ---
 
 ## Codebase cross-reference
