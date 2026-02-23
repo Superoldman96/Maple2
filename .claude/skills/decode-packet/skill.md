@@ -1,6 +1,6 @@
 ---
 name: decode-packet
-description: Decode MapleStory2 packet hex bytes interactively. Supports typed field parsing, little-endian conversions, and auto-parsing of known packets like Stat (0x002E).
+description: Decode MapleStory2 packet hex bytes interactively. Supports typed field parsing and little-endian conversions.
 argument-hint: [mode] [args...]
 allowed-tools: Bash(node -e *), AskUserQuestion
 ---
@@ -18,8 +18,6 @@ Arguments received: **$ARGUMENTS**
 | Parse hex as typed fields | `/decode-packet hex "A6 98 14 00 00 01 04" int byte byte byte` |
 | Decimal → little-endian hex | `/decode-packet to-hex 23000054` |
 | Little-endian hex → decimal | `/decode-packet from-hex "F6 F3 5E 01"` |
-| Auto-parse Stat (Init, all 35 attrs) | `/decode-packet stat-init "00 01 02 ..."` |
-| Auto-parse Stat (Update, with attr bytes) | `/decode-packet stat-update "00 01 02 ..."` |
 
 ---
 
@@ -30,8 +28,6 @@ Parse `$ARGUMENTS`:
 - If it starts with `hex` → **Mode A**: typed field parse
 - If it starts with `to-hex` → **Mode B**: decimal to little-endian hex
 - If it starts with `from-hex` → **Mode C**: little-endian hex to decimal
-- If it starts with `stat-init` → **Mode D**: full Stat Init packet decode
-- If it starts with `stat-update` → **Mode E**: Stat Update packet decode (has attr byte per entry)
 - If empty or unrecognized → **ask the user** which mode they want using `AskUserQuestion`
 
 ---
@@ -135,106 +131,6 @@ else if (buf.length === 2) {
 
 ---
 
-## Mode D — Auto-parse Stat Init packet (all 35 attributes, no attr byte)
-
-Usage: `/decode-packet stat-init "<full hex bytes of Stat packet>"`
-
-Structure (Init path — `StatsPacket.Init`):
-```
-[ObjectId: int] [Command: byte] [Count: byte=35]
-for i=0..34:
-  if i==4 (Health): [Total: long] [Base: long] [Current: long]
-  else:             [Total: int]  [Base: int]  [Current: int]
-```
-
-```bash
-node -e "
-const ATTRS = ['Strength','Dexterity','Intelligence','Luck','Health',
-  'HpRegen','HpRegenInterval','Spirit','SpRegen','SpRegenInterval',
-  'Stamina','StaminaRegen','StaminaRegenInterval','AttackSpeed','MovementSpeed',
-  'Accuracy','Evasion','CriticalRate','CriticalDamage','CriticalEvasion',
-  'Defense','PerfectGuard','JumpHeight','PhysicalAtk','MagicalAtk',
-  'PhysicalRes','MagicalRes','MinWeaponAtk','MaxWeaponAtk','Damage',
-  'Unknown','Piercing','MountSpeed','BonusAtk','PetBonusAtk'];
-const buf = Buffer.from('<HEX_STRING>'.replace(/\\s+/g, ''), 'hex');
-let o = 0;
-const ri = () => { const v = buf.readInt32LE(o); o += 4; return v; };
-const rb = () => { const v = buf.readUInt8(o); o += 1; return v; };
-const rl = () => { const v = buf.readBigInt64LE(o); o += 8; return v; };
-const objectId = ri();
-const command  = rb();
-const count    = rb();
-console.log('ObjectId = ' + objectId + '  Command = ' + command + '  Count = ' + count);
-console.log('');
-for (let i = 0; i < count && i < ATTRS.length; i++) {
-  const name = ATTRS[i];
-  const isHealth = (i === 4);
-  const total   = isHealth ? rl() : ri();
-  const base    = isHealth ? rl() : ri();
-  const current = isHealth ? rl() : ri();
-  if (total !== 0n && total !== 0 || base !== 0n && base !== 0) {
-    console.log('  [' + i + '] ' + name + ': Total=' + total + '  Base=' + base + '  Current=' + current);
-  }
-}
-if (o < buf.length) {
-  console.log('\\n[' + (buf.length - o) + ' bytes remaining at offset ' + o + ']');
-}
-"
-```
-
-Note: Zero-valued stats are suppressed for readability. Remove the `if (total !== 0n ...)` condition to show all.
-
----
-
-## Mode E — Auto-parse Stat Update packet (specific attributes, each prefixed by attr byte)
-
-Usage: `/decode-packet stat-update "<hex bytes>"`
-
-Structure (Update path — `StatsPacket.Update(IActor, params BasicAttribute[])`):
-```
-[ObjectId: int] [Command: byte] [Count: byte]
-for each entry:
-  [Attribute: byte]
-  if Attribute==4 (Health): [Total: long] [Base: long] [Current: long]
-  else:                      [Total: int]  [Base: int]  [Current: int]
-```
-
-```bash
-node -e "
-const ATTRS = ['Strength','Dexterity','Intelligence','Luck','Health',
-  'HpRegen','HpRegenInterval','Spirit','SpRegen','SpRegenInterval',
-  'Stamina','StaminaRegen','StaminaRegenInterval','AttackSpeed','MovementSpeed',
-  'Accuracy','Evasion','CriticalRate','CriticalDamage','CriticalEvasion',
-  'Defense','PerfectGuard','JumpHeight','PhysicalAtk','MagicalAtk',
-  'PhysicalRes','MagicalRes','MinWeaponAtk','MaxWeaponAtk','Damage',
-  'Unknown','Piercing','MountSpeed','BonusAtk','PetBonusAtk'];
-const buf = Buffer.from('<HEX_STRING>'.replace(/\\s+/g, ''), 'hex');
-let o = 0;
-const ri = () => { const v = buf.readInt32LE(o); o += 4; return v; };
-const rb = () => { const v = buf.readUInt8(o); o += 1; return v; };
-const rl = () => { const v = buf.readBigInt64LE(o); o += 8; return v; };
-const objectId = ri();
-const command  = rb();
-const count    = rb();
-console.log('ObjectId = ' + objectId + '  Command = ' + command + '  Count = ' + count);
-console.log('');
-for (let j = 0; j < count; j++) {
-  const attrByte = rb();
-  const name = ATTRS[attrByte] || ('Unknown_' + attrByte);
-  const isHealth = (attrByte === 4);
-  const total   = isHealth ? rl() : ri();
-  const base    = isHealth ? rl() : ri();
-  const current = isHealth ? rl() : ri();
-  console.log('  [' + attrByte + '] ' + name + ': Total=' + total + '  Base=' + base + '  Current=' + current);
-}
-if (o < buf.length) {
-  console.log('\\n[' + (buf.length - o) + ' bytes remaining at offset ' + o + ']');
-}
-"
-```
-
----
-
 ## No arguments — ask the user
 
 If `$ARGUMENTS` is empty or not one of the recognized modes, use `AskUserQuestion` to ask:
@@ -243,8 +139,6 @@ If `$ARGUMENTS` is empty or not one of the recognized modes, use `AskUserQuestio
 1. Parse hex bytes as typed fields (e.g. int, byte, short…)
 2. Convert a decimal number → little-endian hex (for --search-hex)
 3. Convert little-endian hex → decimal
-4. Auto-parse a full Stat Init packet (0x002E, all 35 attrs)
-5. Auto-parse a Stat Update packet (specific attrs with attr byte)
 
 Then ask a follow-up for the hex/number input once you know which mode they want.
 
@@ -253,11 +147,6 @@ Then ask a follow-up for the hex/number input once you know which mode they want
 ## Notes
 
 - **All values are little-endian** (same as MapleStory2 protocol)
-- The Stat packet opcode is `SendOp.Stat` (0x002E in GMS2)
-- `Stat.TOTAL = 3` → each attribute has 3 components: `Total`, `Base`, `Current`
-- `Stats.BASIC_TOTAL = 35` → 35 `BasicAttribute` entries (indices 0–34)
-- **Health** (index 4) uses `long` (8 bytes each); all other attributes use `int` (4 bytes each)
-- `WritePlayerStats` / `WriteNpcStats` use a different layout (grouped by stat component, not by attribute) — use Mode A with manual types for those
 
 ---
 
